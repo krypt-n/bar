@@ -250,16 +250,18 @@ int xft_char_width (uint16_t ch, font_t *cur_font)
 }
 
 int
-draw_char (monitor_t *mon, font_t *cur_font, int x, int align, uint16_t ch)
+draw_char (monitor_t *mon, font_t *cur_font, int x, int align, uint16_t *seq, size_t seq_len)
 {
-    int ch_width;
+    int ch_width = 0;
 
-    if (cur_font->xft_ft) {
-        ch_width = xft_char_width(ch, cur_font);
-    } else {
-        ch_width = (cur_font->width_lut) ?
-            cur_font->width_lut[ch - cur_font->char_min].character_width:
-            cur_font->width;
+    for (size_t i = 0; i < seq_len; i++) {
+        if (cur_font->xft_ft) {
+            ch_width += xft_char_width(seq[i], cur_font);
+        } else {
+            ch_width += (cur_font->width_lut) ?
+                cur_font->width_lut[seq[i] - cur_font->char_min].character_width:
+                cur_font->width;
+        }
     }
     switch (align) {
         case ALIGN_C:
@@ -277,21 +279,24 @@ draw_char (monitor_t *mon, font_t *cur_font, int x, int align, uint16_t ch)
             x = mon->width - ch_width;
             break;
     }
-    
+
         /* Draw the background first */
     fill_rect(mon->pixmap, gc[GC_CLEAR], x, 0, ch_width, bh);
 
     int y = bh / 2 + cur_font->height / 2- cur_font->descent + offsets_y[offset_y_index];
     if (cur_font->xft_ft) {
-        XftDrawString16 (xft_draw, &sel_fg, cur_font->xft_ft, x,y, &ch, 1);
+        XftDrawString16 (xft_draw, &sel_fg, cur_font->xft_ft, x,y, seq, seq_len);
     } else {
         /* xcb accepts string in UCS-2 BE, so swap */
-        ch = (ch >> 8) | (ch << 8);
-        
-        // The coordinates here are those of the baseline
-        xcb_poly_text_16_simple(c, mon->pixmap, gc[GC_DRAW],
-                            x, y,
-                            1, &ch);
+        for (size_t i = 0; i < seq_len; i++) {
+            uint16_t ch = seq[i];
+            ch = (ch >> 8) | (ch << 8);
+
+            // The coordinates here are those of the baseline
+            xcb_poly_text_16_simple(c, mon->pixmap, gc[GC_DRAW],
+                                x, y,
+                                1, &ch);
+        }
     }
 
     // We can render both at the same time
@@ -670,57 +675,74 @@ parse (char *text)
             // Eat the trailing }
             p++;
         } else { // utf-8 -> ucs-2
-            uint8_t *utf = (uint8_t *)p;
-            uint16_t ucs;
+            uint16_t *ucs_seq = NULL;
+            int ucs_seq_len = 0;
 
-            // ASCII
-            if (utf[0] < 0x80) {
-                ucs = utf[0];
-                p  += 1;
-            }
-            // Two byte utf8 sequence
-            else if ((utf[0] & 0xe0) == 0xc0) {
-                ucs = (utf[0] & 0x1f) << 6 | (utf[1] & 0x3f);
-                p += 2;
-            }
-            // Three byte utf8 sequence
-            else if ((utf[0] & 0xf0) == 0xe0) {
-                ucs = (utf[0] & 0xf) << 12 | (utf[1] & 0x3f) << 6 | (utf[2] & 0x3f);
-                p += 3;
-            }
-            // Four byte utf8 sequence
-            else if ((utf[0] & 0xf8) == 0xf0) {
-                ucs = 0xfffd;
-                p += 4;
-            }
-            // Five byte utf8 sequence
-            else if ((utf[0] & 0xfc) == 0xf8) {
-                ucs = 0xfffd;
-                p += 5;
-            }
-            // Siz byte utf8 sequence
-            else if ((utf[0] & 0xfe) == 0xfc) {
-                ucs = 0xfffd;
-                p += 6;
-            }
-            // Not a valid utf-8 sequence
-            else {
-                ucs = utf[0];
-                p += 1;
+            for (;;) {
+                if (*p == '\0' || *p == '\n')
+                    break;
+
+                if (*p == '%' && *(p+1) == '{' && strchr(p+2, '}'))
+                    break;
+
+                uint16_t ucs;
+                uint8_t *utf = (uint8_t *)p;
+                // ASCII
+                if (utf[0] < 0x80) {
+                    ucs = utf[0];
+                    p  += 1;
+                }
+                // Two byte utf8 sequence
+                else if ((utf[0] & 0xe0) == 0xc0) {
+                    ucs = (utf[0] & 0x1f) << 6 | (utf[1] & 0x3f);
+                    p += 2;
+                }
+                // Three byte utf8 sequence
+                else if ((utf[0] & 0xf0) == 0xe0) {
+                    ucs = (utf[0] & 0xf) << 12 | (utf[1] & 0x3f) << 6 | (utf[2] & 0x3f);
+                    p += 3;
+                }
+                // Four byte utf8 sequence
+                else if ((utf[0] & 0xf8) == 0xf0) {
+                    ucs = 0xfffd;
+                    p += 4;
+                }
+                // Five byte utf8 sequence
+                else if ((utf[0] & 0xfc) == 0xf8) {
+                    ucs = 0xfffd;
+                    p += 5;
+                }
+                // Siz byte utf8 sequence
+                else if ((utf[0] & 0xfe) == 0xfc) {
+                    ucs = 0xfffd;
+                    p += 6;
+                }
+                // Not a valid utf-8 sequence
+                else {
+                    ucs = utf[0];
+                    p += 1;
+                }
+
+                ++ ucs_seq_len;
+                ucs_seq = realloc(ucs_seq, ucs_seq_len * sizeof(uint16_t));
+                ucs_seq[ucs_seq_len - 1] = ucs;
             }
 
-            cur_font = select_drawable_font(ucs);
-            if (!cur_font)
+            cur_font = select_drawable_font(ucs_seq[0]);
+            if (!cur_font) {
+                free(ucs_seq);
                 continue;
+            }
 
             if(cur_font->ptr)
                 xcb_change_gc(c, gc[GC_DRAW] , XCB_GC_FONT, (const uint32_t []) {
                 cur_font->ptr
             });
-            int w = draw_char(cur_mon, cur_font, pos_x, align, ucs);
+            int w = draw_char(cur_mon, cur_font, pos_x, align, ucs_seq, ucs_seq_len);
 
             pos_x += w;
             area_shift(cur_mon->window, align, w);
+            free(ucs_seq);
         }
     }
     XftDrawDestroy (xft_draw);
@@ -1117,19 +1139,19 @@ xcb_visualid_t
 get_visual (void)
 {
 
-    XVisualInfo xv; 
+    XVisualInfo xv;
     xv.depth = 32;
     int result = 0;
-    XVisualInfo* result_ptr = NULL; 
+    XVisualInfo* result_ptr = NULL;
     result_ptr = XGetVisualInfo(dpy, VisualDepthMask, &xv, &result);
 
     if (result > 0) {
         visual_ptr = result_ptr->visual;
         return result_ptr->visualid;
     }
-    
+
     //Fallback
-    visual_ptr = DefaultVisual(dpy, scr_nbr);	
+    visual_ptr = DefaultVisual(dpy, scr_nbr);
 	return scr->root_visual;
 }
 
