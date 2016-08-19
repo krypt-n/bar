@@ -1522,7 +1522,7 @@ main (int argc, char **argv)
                                     write(STDOUT_FILENO, "\n", 1);
                                 }
                             }
-                        break;
+                            break;
                     }
 
                     free(ev);
