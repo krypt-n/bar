@@ -1,4 +1,5 @@
 // vim:sw=4:ts=4:et:
+#define _POSIX_C_SOURCE 200809L
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -12,7 +13,9 @@
 #include <errno.h>
 #include <xcb/xcb.h>
 #include <xcb/xcbext.h>
+#if WITH_XINERAMA
 #include <xcb/xinerama.h>
+#endif
 #include <xcb/randr.h>
 
 #include <X11/Xft/Xft.h>
@@ -891,6 +894,7 @@ set_ewmh_atoms (void)
         xcb_change_property(c, XCB_PROP_MODE_REPLACE, mon->window, atom_list[NET_WM_STRUT_PARTIAL], XCB_ATOM_CARDINAL, 32, 12, strut);
         xcb_change_property(c, XCB_PROP_MODE_REPLACE, mon->window, atom_list[NET_WM_STRUT], XCB_ATOM_CARDINAL, 32, 4, strut);
         xcb_change_property(c, XCB_PROP_MODE_REPLACE, mon->window, XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8, 3, "bar");
+        xcb_change_property(c, XCB_PROP_MODE_REPLACE, mon->window, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8, 12, "lemonbar\0Bar");
     }
 }
 
@@ -1116,6 +1120,7 @@ get_randr_monitors (void)
     monitor_create_chain(r, valid);
 }
 
+#ifdef WITH_XINERAMA
 void
 get_xinerama_monitors (void)
 {
@@ -1144,6 +1149,7 @@ get_xinerama_monitors (void)
 
     monitor_create_chain(rects, screens);
 }
+#endif
 
 xcb_visualid_t
 get_visual (void)
@@ -1245,7 +1251,7 @@ xconn (void)
 }
 
 void
-init (char *wm_name)
+init (char *wm_name, char *wm_instance)
 {
     // Try to load a default font
     if (!font_count)
@@ -1274,8 +1280,10 @@ init (char *wm_name)
     qe_reply = xcb_get_extension_data(c, &xcb_randr_id);
 
     if (qe_reply && qe_reply->present) {
-		get_randr_monitors();
-    } else {
+        get_randr_monitors();
+    }
+#if WITH_XINERAMA
+    else {
         qe_reply = xcb_get_extension_data(c, &xcb_xinerama_id);
 
         // Check if Xinerama extension is present and active
@@ -1289,6 +1297,7 @@ init (char *wm_name)
             free(xia_reply);
         }
     }
+#endif
 
     if (!monhead) {
         // If I fits I sits
@@ -1336,7 +1345,25 @@ init (char *wm_name)
 
         // Set the WM_NAME atom to the user specified value
         if (wm_name)
-            xcb_change_property(c, XCB_PROP_MODE_REPLACE, monhead->window, XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8 ,strlen(wm_name), wm_name);
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, mon->window, XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8 ,strlen(wm_name), wm_name);
+
+        // set the WM_CLASS atom instance to the executable name
+        if (wm_instance) {
+            char *wm_class;
+            int wm_class_offset, wm_class_len;
+
+            // WM_CLASS is nullbyte seperated: wm_instance + "\0Bar\0"
+            wm_class_offset = strlen(wm_instance) + 1;
+            wm_class_len = wm_class_offset + 4;
+
+            wm_class = calloc(1, wm_class_len + 1);
+            strcpy(wm_class, wm_instance);
+            strcpy(wm_class+wm_class_offset, "Bar");
+
+            xcb_change_property(c, XCB_PROP_MODE_REPLACE, mon->window, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8, wm_class_len, wm_class);
+
+            free(wm_class);
+        }
     }
 
     char color[] = "#ffffff";
@@ -1384,6 +1411,21 @@ cleanup (void)
         xcb_disconnect(c);
 }
 
+char*
+strip_path(char *path)
+{
+    char *slash;
+
+    if (path == NULL || *path == '\0')
+        return strdup("lemonbar");
+
+    slash = strrchr(path, '/');
+    if (slash != NULL)
+        return strndup(slash + 1, 31);
+
+    return strndup(path, 31);
+}
+
 void
 sighandle (int signal)
 {
@@ -1408,6 +1450,7 @@ main (int argc, char **argv)
     int geom_v[4] = { -1, -1, 0, 0 };
     int ch, areas;
     char *wm_name;
+    char *instance_name;
 
     // Install the parachute!
     atexit(cleanup);
@@ -1423,6 +1466,8 @@ main (int argc, char **argv)
     // A safe default
     areas = 10;
     wm_name = NULL;
+
+    instance_name = strip_path(argv[0]);
 
     // Connect to the Xserver and initialize scr
     xconn();
@@ -1447,7 +1492,7 @@ main (int argc, char **argv)
                 exit (EXIT_SUCCESS);
             case 'g': (void)parse_geometry_string(optarg, geom_v); break;
             case 'p': permanent = true; break;
-            case 'n': wm_name = optarg; break;
+            case 'n': wm_name = strdup(optarg); break;
             case 'b': topbar = false; break;
             case 'd': dock = true; break;
             case 'f': font_load(optarg); break;
@@ -1482,7 +1527,11 @@ main (int argc, char **argv)
     by = geom_v[3];
 
     // Do the heavy lifting
-    init(wm_name);
+    init(wm_name, instance_name);
+    // The string is strdup'd when the command line arguments are parsed
+    free(wm_name);
+    // The string is strdup'd when stripping argv[0]
+    free(instance_name);
     // Get the fd to Xserver
     pollin[1].fd = xcb_get_file_descriptor(c);
     for (;;) {
@@ -1519,8 +1568,8 @@ main (int argc, char **argv)
                                 area_t *area = area_get(press_ev->event, press_ev->detail, press_ev->event_x);
                                 // Respond to the click
                                 if (area) {
-                                    write(STDOUT_FILENO, area->cmd, strlen(area->cmd));
-                                    write(STDOUT_FILENO, "\n", 1);
+                                    (void)write(STDOUT_FILENO, area->cmd, strlen(area->cmd));
+                                    (void)write(STDOUT_FILENO, "\n", 1);
                                 }
                             }
                         break;
