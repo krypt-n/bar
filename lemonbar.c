@@ -1571,7 +1571,7 @@ main (int argc, char **argv)
                                     (void)write(STDOUT_FILENO, "\n", 1);
                                 }
                             }
-                        break;
+                            break;
                     }
 
                     free(ev);
