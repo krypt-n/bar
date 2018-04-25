@@ -634,7 +634,7 @@ parse (char *text)
                     case 'A':
                               button = XCB_BUTTON_INDEX_1;
                               // The range is 1-5
-                              if (isdigit(*p) && (*p > '0' && *p < '6'))
+                              if (isdigit(*p) && (*p >= '0' && *p < '6'))
                                   button = *p++ - '0';
                               if (!area_add(p, block_end, &p, cur_mon, pos_x, align, button))
                                   return;
@@ -921,7 +921,7 @@ monitor_new (int x, int y, int width, int height)
                       XCB_WINDOW_CLASS_INPUT_OUTPUT, visual,
                       XCB_CW_BACK_PIXEL | XCB_CW_BORDER_PIXEL | XCB_CW_OVERRIDE_REDIRECT | XCB_CW_EVENT_MASK | XCB_CW_COLORMAP,
     (const uint32_t []) {
-        bgc.v, bgc.v, dock, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_BUTTON_PRESS, colormap
+        bgc.v, bgc.v, dock, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_POINTER_MOTION, colormap
     });
 
     ret->pixmap = xcb_generate_id(c);
@@ -1445,6 +1445,7 @@ main (int argc, char **argv)
     xcb_generic_event_t *ev;
     xcb_expose_event_t *expose_ev;
     xcb_button_press_event_t *press_ev;
+    xcb_motion_notify_event_t *hover_ev;
     char input[4096] = {0, };
     bool permanent = false;
     int geom_v[4] = { -1, -1, 0, 0 };
@@ -1574,6 +1575,16 @@ main (int argc, char **argv)
                                 if (area) {
                                     (void)write(STDOUT_FILENO, area->cmd, strlen(area->cmd));
                                     (void)write(STDOUT_FILENO, "\n", 1);
+                                }
+                            }
+                        break;
+                        case XCB_MOTION_NOTIFY:
+                            hover_ev = (xcb_motion_notify_event_t *)ev;
+                            {
+                                area_t *area = area_get(hover_ev->event, hover_ev->detail, hover_ev->event_x);
+                                if (area){
+                                    write(STDOUT_FILENO, area->cmd, strlen(area->cmd));
+                                    write(STDOUT_FILENO, "\n", 1);
                                 }
                             }
                         break;
